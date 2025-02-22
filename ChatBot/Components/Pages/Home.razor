@@ -1,0 +1,199 @@
+﻿@page "/"
+
+@using ChatBot.Data
+
+@inject ChatBot.Data.ChatDbContext dataBase
+
+<h3>Chatbot – Proof-of-Concept</h3>
+
+<div style="border:1px solid #ccc; padding:10px; margin-bottom:10px;">
+    @if (messages.Any())
+    {
+        @foreach (var msg in messages)
+        {
+            <div style="margin-bottom:8px;">
+                @if (msg.IsUserMessage)
+                {
+                    <b>User:</b> @msg.Content
+                }
+                else
+                {
+                    <span style="color:blue;"><b>Bot:</b></span> @msg.Content
+
+                    <span style="margin-left:10px;">
+                        <button @onclick="() => SetRating(msg.Id, msg.Rating == 1 ? (int?)null : 1)">
+                            👍 @(msg.Rating == 1 ? "(X)" : "")
+                        </button>
+                        <button @onclick="() => SetRating(msg.Id, msg.Rating == -1 ? (int?)null : -1)">
+                            👎 @(msg.Rating == -1 ? "(X)" : "")
+                        </button>
+                    </span>
+                }
+            </div>
+        }
+    }
+    else
+    {
+        <p><i>Siema eniu.</i></p>
+    }
+</div>
+
+<div>
+    <input @bind="userMessage" style="width:300px;" />
+    <button @onclick="SendMessage">Wyślij</button>
+    <button @onclick="CancelResponse" disabled="@(!isGeneratingResponse)" style="margin-left:10px;">
+        Anuluj odpowiedź
+    </button>
+</div>
+
+@code {
+    private List<ChatMessage> messages = new();
+    private string userMessage = string.Empty;
+    private bool isGeneratingResponse = false;
+
+    private CancellationTokenSource? cancellationTokenSource;
+
+    protected override void OnInitialized()
+    {
+        LoadMessages();
+    }
+
+    private void LoadMessages()
+    {
+        messages = dataBase.ChatMessages
+            .OrderBy(m => m.CreatedAt)
+            .ToList();
+    }
+    
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(userMessage))
+            return;
+
+        var userMsg = new ChatMessage
+            {
+                IsUserMessage = true,
+                Content = userMessage,
+                CreatedAt = DateTime.UtcNow
+            };
+
+        dataBase.ChatMessages.Add(userMsg);
+        await dataBase.SaveChangesAsync();
+
+        userMessage = string.Empty;
+        LoadMessages();
+        StateHasChanged();
+
+        if (cancellationTokenSource != null)
+        {
+            cancellationTokenSource.Cancel();
+            await Task.Delay(100);
+        }
+
+        cancellationTokenSource = new CancellationTokenSource();
+
+        var token = cancellationTokenSource.Token;
+
+        isGeneratingResponse = true;
+
+        var botMsg = new ChatMessage
+            {
+                IsUserMessage = false,
+                Content = "",
+                CreatedAt = DateTime.UtcNow
+            };
+
+        dataBase.ChatMessages.Add(botMsg);
+        await dataBase.SaveChangesAsync();
+        LoadMessages();
+        StateHasChanged();
+
+        var fullResponse = GenerateRandomText();
+        var sb = new System.Text.StringBuilder();
+
+        try
+        {
+            for (int i = 0; i < fullResponse.Length; i++)
+            {
+                token.ThrowIfCancellationRequested(); 
+
+                sb.Append(fullResponse[i]);
+
+                if (i % 5 == 0)
+                {
+                    botMsg.Content = sb.ToString();
+                    dataBase.Update(botMsg);
+                    await dataBase.SaveChangesAsync();
+                    LoadMessages();
+                    StateHasChanged();
+                }
+
+                await Task.Delay(50, token);
+            }
+
+            botMsg.Content = sb.ToString();
+            dataBase.Update(botMsg);
+            await dataBase.SaveChangesAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            isGeneratingResponse = false;
+            LoadMessages();
+            StateHasChanged();
+        }
+    }
+    
+    private void CancelResponse()
+    {
+        if (isGeneratingResponse)
+        {
+            cancellationTokenSource?.Cancel();
+        }
+    }
+    
+    private async Task SetRating(int msgId, int? rating)
+    {
+        var msg = await dataBase.ChatMessages.FindAsync(msgId);
+
+        if (msg is null || msg.IsUserMessage)
+        {
+            return;
+        }
+
+        msg.Rating = rating;
+
+        await dataBase.SaveChangesAsync();
+
+        LoadMessages();
+        StateHasChanged();
+    }
+
+    private string GenerateRandomText()
+    {
+        var shortText = "Lorem ipsum dolor sit amet.";
+        var mediumText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Suspendisse potenti.";
+        var longText = @"Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Proin sed neque sed elit tempus convallis in vel neque.
+Sed mattis tellus leo, at convallis mi rutrum vitae.
+Mauris a ligula commodo, pretium urna at, fringilla lorem.";
+
+        var rnd = new Random();
+        int choice = rnd.Next(1, 4);
+
+        return choice switch
+        {
+            1 => shortText,
+            2 => mediumText,
+            _ => longText
+        };
+    }
+
+    public void Dispose()
+    {
+        dataBase.Dispose();
+        cancellationTokenSource?.Dispose();
+    }
+}
